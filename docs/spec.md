@@ -36,9 +36,10 @@ slab stores heat. Not OpMode switching, not the heating curve itself.
   steer only the nights.
 - Needs set commands in vcontrold's `vito.xml` (today only the hot water setpoints are
   writable). Done on the infra side; see M1.
-- The pump's own time program stays as the fallback: the controller only overrides it. A dead
-  controller leaves today's behaviour. Whether to override through setpoint writes or the
-  pump's party/economy modes is to be checked in M1.
+- The pump's own time program stays as the fallback: the controller only overrides its
+  setpoints. M1 (2026-11-14) showed a write takes effect within minutes and the program's switch
+  between Normal and Reduced leaves the written value alone, so setpoint writes are the override
+  and the dead-man restores the defaults.
 - Writes go to the pump's EEPROM, so they are capped (at most 12/day) until the limit is known.
 
 ## Controller
@@ -119,5 +120,4 @@ an ACL (read sensor topics, write its own) and no Home Assistant token.
 
 ## Open questions
 
-- Setpoint write vs party/economy mode as the override (M1).
-- The pump's EEPROM write limit (M1).
+- The pump's EEPROM write limit (not answered by M1; the cap stays).
