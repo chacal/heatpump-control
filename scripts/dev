@@ -1,0 +1,12 @@
+#!/bin/sh
+# Runs a command in a container with this repo mounted, so third-party packages never run on
+# the host, e.g. `scripts/dev uv run pytest`. Rootless podman; the venv and uv's cache live in
+# named volumes, not in the working tree.
+set -eu
+cd "$(dirname "$0")/.."
+tty=; [ -t 0 ] && tty=-t
+exec podman --cgroup-manager=cgroupfs run --rm -i $tty \
+  -v "$PWD:/src" -w /src \
+  -v heatpump-control-venv:/venv -e UV_PROJECT_ENVIRONMENT=/venv \
+  -v uv-cache:/root/.cache/uv -e UV_LINK_MODE=copy \
+  ghcr.io/astral-sh/uv:0.12-python3.13-trixie-slim "$@"

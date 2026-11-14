@@ -16,5 +16,8 @@ uv sync
 uv run pytest
 ```
 
+`scripts/dev uv run pytest` does the same inside a rootless podman container, so the
+dependencies never run on the host.
+
 CI (`.github/workflows/docker.yml`) runs the tests, then builds and pushes
 `ghcr.io/chacal/heatpump-control` (`latest` and the commit sha, amd64 + arm64) from `main`.
