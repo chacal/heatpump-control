@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# Analysis inputs: private (house data) or license-restricted (prices); see analysis/README.md
+analysis/data/
+*.env
