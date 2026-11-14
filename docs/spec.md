@@ -27,11 +27,14 @@ mistake costs less comfort than cold water does.
 
 ## Lever
 
-The room setpoint `RoomTempNormal` (address 2000). On weather compensation it shifts the heating
-curve: lower and the compressor idles, higher and the floor slab stores heat. Not OpMode
-switching, not the heating curve itself.
+The room setpoints `RoomTempNormal` (address 2000) and `RoomTempReduced` (2001). On weather
+compensation they shift the heating curve: lower and the compressor idles, higher and the floor
+slab stores heat. Not OpMode switching, not the heating curve itself.
 
-- Needs a set command in vcontrold's `vito.xml` (today only the hot water setpoints are
+- The pump's time program switches between them (today Reduced in the day, Normal at
+  night), so the controller writes the one active in that hour; writing Normal alone would
+  steer only the nights.
+- Needs set commands in vcontrold's `vito.xml` (today only the hot water setpoints are
   writable). Done on the infra side; see M1.
 - The pump's own time program stays as the fallback: the controller only overrides it. A dead
   controller leaves today's behaviour. Whether to override through setpoint writes or the
@@ -66,7 +69,7 @@ while nobody is home.
 - A room floor (e.g. 20 °C) overrides any plan.
 - A maximum length for an idle stretch.
 - The write cap above.
-- A **dead-man** on the pump's side restores the default setpoint when the controller's
+- A **dead-man** on the pump's side restores the default setpoints (Normal and Reduced) when the controller's
   heartbeat stops, because the setting persists in the pump otherwise.
 - Compressor starts: a minimum off time and a daily start budget in the planner; a metric and
   alert on `CompressorStarts` per day, independent of the pump's own timers.
@@ -82,7 +85,7 @@ cold. (M4; until then a manual "fireplace lit" switch.)
 ## Interfaces
 
 - **In:** MQTT sensor topics (read-only user), spot prices and forecast from public APIs, pump
-  state from vcontrold.
+  state from Prometheus (`heatpump_*`, every ~30 s; shadow mode needs no vcontrold access).
 - **Out:** setpoint writes to vcontrold; Prometheus metrics; Home Assistant entities through MQTT
   discovery (mode, current plan, setpoint offset, today's savings estimate) with a few controls
   (on/off, comfort min/max, away, fireplace lit). No web UI of its own.
@@ -99,16 +102,15 @@ and gets no credentials.
 
 ## Where it runs
 
-A container on a home server, deployed by the infrastructure side from a deploy request
-(`docs/deploy-request.md`). It needs network access to vcontrold, an MQTT user with an ACL (read
-sensor topics, write its own), and no Home Assistant token. The development environment has no
-access to the pump or to any deployment credential.
+A container on a home server, deployed with the rest of the home's infrastructure (Ansible, image
+pinned by digest). Live mode needs network access to vcontrold; it also needs an MQTT user with
+an ACL (read sensor topics, write its own) and no Home Assistant token.
 
 ## Milestones
 
 | | What | Done when |
 |---|---|---|
-| M1 | Write test | `vito.xml` set command; one write takes effect and the time program does not undo it |
+| M1 | Write test | `vito.xml` set commands; one write each takes effect and the time program does not undo it |
 | M2 | Shadow mode | plans, metrics, HA entities; plan in the morning report |
 | M3 | Live heating | guards, alternate days, success measures reported |
 | M4 | Fireplace sensor | probe in the model; family notes |
@@ -119,4 +121,3 @@ access to the pump or to any deployment credential.
 
 - Setpoint write vs party/economy mode as the override (M1).
 - The pump's EEPROM write limit (M1).
-- Format of the deploy request (`docs/deploy-request.md`, proposal).
