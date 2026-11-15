@@ -54,8 +54,11 @@ def run_plan(now: datetime) -> int:
               f"  {'##' if h else '..'}  {t:5.2f}  {'##' if b else '..'}")
     for w in r.setpoints.writes:
         print(f"write {w.at.astimezone(HELSINKI):%a %H:%M} {w.register} = {w.value:g}")
+    # When Energy-Charts has tomorrow's prices shows as the first round whose prices_until jumps.
+    prices_until = prices[-1][0] + (prices[-1][0] - prices[-2][0]) if len(prices) > 1 else None
     log = {
         "at": now.isoformat(), "t_now": t_now, "pump": pump, "slots": len(slots),
+        "prices_until": prices_until.isoformat() if prices_until else None,
         "plan_eur": r.plan.cost_eur, "baseline_eur": r.baseline.cost_eur, "savings_eur": r.savings_eur,
         "starts": r.plan.starts, "write_penalty_eur": r.write_penalty_eur, "over_write_cap": r.over_write_cap,
         "heating": "".join("1" if h else "0" for h in r.plan.heating),
