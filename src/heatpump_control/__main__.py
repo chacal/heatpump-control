@@ -1,6 +1,6 @@
 """Shadow mode, one round: fetch the inputs, plan, print the plan and log it as one JSON line.
 
-    python -m heatpump_control plan < sensor-archive-lines.jsonl
+    python -m heatpump_control plan [--json] < sensor-archive-lines.jsonl
 
 Room readings come from stdin as sensor-archive JSONL until the MQTT client exists. Settings
 from the environment: HEATPUMP_LATLON ("lat,lon" for the forecast; not in this public repo),
@@ -20,7 +20,7 @@ from heatpump_control.rooms import Rooms
 from heatpump_control.sources import fmi_forecast, heat_history, pump_state, spot_prices
 
 
-def run_plan(now: datetime) -> int:
+def run_plan(now: datetime, as_json: bool = False) -> int:
     rooms = Rooms()
     for line in sys.stdin:
         if line.strip():
@@ -49,6 +49,9 @@ def run_plan(now: datetime) -> int:
     curve = Curve(pump["curve_level"], pump["curve_slope"])
     r = decide(slots, t_room, t_slab, registers, curve)
 
+    if as_json:
+        print(json.dumps(round_log(now, t_room, t_slab, pump, prices, r)))
+        return 0
     print(f"bedrooms {t_room:.2f} °C ({', '.join(f'{s} {t:.2f}' for s, t in sorted(rooms.fresh(now).items()))}); "
           f"slab ~{t_slab:.1f} °C; setpoints N {pump['normal_c']:g} R {pump['reduced_c']:g}; "
           f"curve {curve.level:g}/{curve.slope:g}")
@@ -63,25 +66,41 @@ def run_plan(now: datetime) -> int:
               f"  {'##' if h else '..'}  {tr:5.2f} {ts:5.1f}  {'##' if b else '..'}  {br:5.2f}")
     for w in r.setpoints.writes:
         print(f"write {w.at.astimezone(HELSINKI):%a %H:%M} {w.register} = {w.value:g}")
+    print(json.dumps(round_log(now, t_room, t_slab, pump, prices, r)), file=sys.stderr)
+    return 0
+
+
+def round_log(now, t_room, t_slab, pump, prices, r) -> dict:
+    """One round as a JSON-able dict: inputs and predictions per slot, for comparing the
+    predictions with what the sensors measure later."""
     # When Energy-Charts has tomorrow's prices shows as the first round whose prices_until jumps.
     prices_until = prices[-1][0] + (prices[-1][0] - prices[-2][0]) if len(prices) > 1 else None
-    log = {
-        "at": now.isoformat(), "t_room": t_room, "t_slab": t_slab, "pump": pump, "slots": len(slots),
+    return {
+        "at": now.isoformat(), "t_room": t_room, "t_slab": t_slab, "pump": pump,
         "prices_until": prices_until.isoformat() if prices_until else None,
         "plan_eur": r.plan.cost_eur, "baseline_eur": r.baseline.cost_eur, "savings_eur": r.savings_eur,
         "starts": r.plan.starts, "write_penalty_eur": r.write_penalty_eur, "over_write_cap": r.over_write_cap,
-        "heating": "".join("1" if h else "0" for h in r.plan.heating),
         "writes": [[w.at.isoformat(), w.register, w.value] for w in r.setpoints.writes],
+        "slots": {
+            "start": r.slots[0].start.isoformat(),
+            "price": [s.price for s in r.slots],
+            "t_out": [round(s.t_out, 2) for s in r.slots],
+            "radiation": [round(s.radiation) for s in r.slots],
+            "heating": "".join("1" if h else "0" for h in r.plan.heating),
+            "t_room": [round(t, 3) for t in r.plan.t_room],
+            "t_slab": [round(t, 2) for t in r.plan.t_slab],
+            "program": "".join("1" if h else "0" for h in r.baseline.heating),
+            "program_t_room": [round(t, 3) for t in r.baseline.t_room],
+        },
     }
-    print(json.dumps(log), file=sys.stderr)
-    return 0
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(prog="heatpump_control")
     parser.add_argument("command", choices=["plan"])
-    parser.parse_args()
-    return run_plan(datetime.now(UTC))
+    parser.add_argument("--json", action="store_true", help="print only the round's JSON log line")
+    args = parser.parse_args()
+    return run_plan(datetime.now(UTC), args.json)
 
 
 if __name__ == "__main__":
