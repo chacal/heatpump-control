@@ -4,7 +4,9 @@ Shifts a Viessmann Vitocal 333-G's heating into cheap spot-price hours while kee
 inside a comfort band. A home project, built as a test of how an agent builds and ships a small
 home-automation app; public in case it is useful to others.
 
-**Status:** design and analysis done, no controller yet. Start with [`docs/spec.md`](docs/spec.md).
+**Status:** M2 (shadow mode) in progress: the planner runs one round from the command line
+(`python -m heatpump_control plan`, room readings on stdin) and writes nothing. Start with
+[`docs/spec.md`](docs/spec.md).
 
 - [`docs/spec.md`](docs/spec.md): goal, lever, safety, milestones
 - [`analysis/`](analysis/): backtests and house-model scripts (the data is not included)
