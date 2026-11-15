@@ -4,7 +4,8 @@
 - Forecast: the Finnish Meteorological Institute's open data. Temperature from FMI's edited
   forecast (the forecasters' own, shown on ilmatieteenlaitos.fi); global radiation from its
   MEPS model run (2.5 km, ~2 days), since the edited forecast doesn't publish radiation.
-- Pump state: Prometheus `heatpump_*`, written every ~30 s from vcontrold on the pump's Pi.
+- Pump state and history: Prometheus `heatpump_*`, written every ~30 s from vcontrold on the
+  pump's Pi.
 """
 
 import json
@@ -97,16 +98,29 @@ def prometheus_value(url: str, expr: str) -> float | None:
     return float(result[0]["value"][1]) if result else None
 
 
+def prometheus_range(url: str, expr: str, start: datetime, end: datetime, step_s: int) -> Series:
+    d = json.loads(_get(f"{url}/api/v1/query_range", {"query": expr, "start": start.timestamp(), "end": end.timestamp(), "step": step_s}))
+    result = d["data"]["result"]
+    return [(datetime.fromtimestamp(t, UTC), float(v)) for t, v in result[0]["values"]] if result else []
+
+
 def pump_state(url: str) -> dict:
-    """Compressor on, how many minutes it has been in that state (up to 120), the setpoints."""
-    on = prometheus_value(url, "heatpump_Compressor")
-    # Seconds since the compressor last changed state, from the 30-s samples of the last 2 h.
-    since = prometheus_value(
-        url, "time() - max_over_time(timestamp(changes(heatpump_Compressor[1m]) > 0)[2h:30s])"
-    )
+    """The active settings: room setpoints and heating curve."""
     return {
-        "compressor_on": bool(on),
-        "minutes_in_state": 120 if since is None else min(since / 60, 120),
         "normal_c": prometheus_value(url, "heatpump_RoomTempNormal"),
         "reduced_c": prometheus_value(url, "heatpump_RoomTempReduced"),
+        "curve_level": prometheus_value(url, "heatpump_HeatingCurveLevel"),
+        "curve_slope": prometheus_value(url, "heatpump_HeatingCurveSlope"),
     }
+
+
+# Compressor speed while heating the house: on, and the secondary flow below hot-water levels.
+HEATING_SPEED = "heatpump_CompressorSpeed * (heatpump_Compressor > bool 0) * (heatpump_SecondaryCircuitFlowTemp < bool 40)"
+
+
+def heat_history(url: str, now: datetime, hours: int = 48) -> tuple[float | None, Series]:
+    """The secondary return temperature `hours` ago (a slab reading when the compressor rests)
+    and the compressor's heating speed (%) every 5 minutes since."""
+    start = now - timedelta(hours=hours)
+    ret = prometheus_range(url, "heatpump_SecondaryCircuitReturnTemp", start, start + timedelta(minutes=30), 300)
+    return (ret[0][1] if ret else None), prometheus_range(url, HEATING_SPEED, start, now, 300)

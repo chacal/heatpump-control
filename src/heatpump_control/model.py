@@ -1,36 +1,70 @@
-"""House model: one thermal mass, heated by the pump, losing heat to the outdoors.
+"""House model: floor slab and room, heated through the pump's weather-compensation curve.
 
-Numbers from the DEV-1 backtests on the house's own data (docs/spec.md): heat per day is about
-3.4 kWh per K of indoor-outdoor difference minus 19 kWh of free gains (UA ~140 W/K); one K
-indoors stores ~15-18 kWh of heat (time constant ~120 h); sun saves ~0.13 kWh of heat per day
-per W/m² of daily mean radiation (~5.4 m² of effective aperture); seasonal COP 5.2.
+Two nodes: the pump heats the slab, the slab heats the room, the room loses heat to the outdoors
+and gains it from people, appliances and the sun. The bedroom median is the room node; the slab
+isn't measured (it is estimated from the pump's history, `observe_slab`).
+
+The pump's heat follows its own heating curve: the active room setpoint, curve level and slope
+set a flow temperature (Viessmann's published formula, which matched the measured flow within
+~2 K over both periods), and the heat delivered grows with flow minus slab temperature.
+
+Fitted on the house's own data (analysis/calibrate_house.py, calibrate_heat.py): Oct-Nov 2026
+for the house, Oct-Nov 2026 and Dec 2025-Feb 2026 for the heat. Predicting the bedroom median
+24 h ahead from the pump's settings alone: RMSE 0.42 K (autumn), 0.53 K (winter).
 """
 
 from dataclasses import dataclass
 
+# Heat from the compressor speed while heating (on, secondary flow < 40 °C): kWh per %-hour,
+# scaled so the 52-week sum matches the pump's heating-heat register (10,692 kWh, 2026-11-09).
+HEAT_KW_PER_SPEED_PCT = 0.0892
+# While the compressor rests the secondary circuit keeps circulating, and its return temperature
+# reads the slab (+0.46 K, sd 0.5 K, Oct-Nov 2026).
+RETURN_MINUS_SLAB_K = 0.46
+
+
+@dataclass(frozen=True)
+class Curve:
+    level: float = -9.0
+    slope: float = 0.6
+
+    def flow_c(self, setpoint_c: float, t_out: float) -> float:
+        d = t_out - setpoint_c
+        return setpoint_c + self.level - self.slope * d * (1.4347 + 0.021 * d + 247.9e-6 * d * d)
+
 
 @dataclass(frozen=True)
 class House:
-    ua_kw_per_k: float = 0.141
-    capacity_kwh_per_k: float = 16.5
-    free_gain_kw: float = 0.79
-    sun_aperture_m2: float = 5.4
+    slab_kwh_per_k: float = 12.2
+    room_kwh_per_k: float = 7.9
+    slab_room_kw_per_k: float = 1.13
+    ua_kw_per_k: float = 0.150
+    free_gain_kw: float = 0.83
+    sun_aperture_m2: float = 8.5
     cop: float = 5.2
-    # Heat mode: weather compensation drives the house towards an equilibrium (t_heat_c) and
-    # modulates rather than cycles, so the output is what holds t_heat_c plus a pull towards it,
-    # capped at the compressor's maximum (the coldest days need 14-15 h at full power for
-    # ~110-125 kWh of heat, so ~8 kW). t_heat_c and the pull are guesses until calibrated against
-    # the night runs of Sep-Nov 2026 (Normal active) and the shadow-mode logs.
-    t_heat_c: float = 22.0
-    pull_kw_per_k: float = 4.0  # closes a gap in ~4 h (capacity / pull)
-    heat_max_kw: float = 8.0
+    heat_kw_per_k: float = 0.428
+    heat_offset_kw: float = 1.50
+    heat_max_kw: float = 5.41
 
-    def heat_kw(self, t_in: float, t_out: float) -> float:
-        hold = self.ua_kw_per_k * (self.t_heat_c - t_out) - self.free_gain_kw
-        return min(self.heat_max_kw, max(0.0, hold + self.pull_kw_per_k * (self.t_heat_c - t_in)))
+    def heat_kw(self, flow_c: float, t_slab: float) -> float:
+        return min(self.heat_max_kw, max(0.0, self.heat_kw_per_k * (flow_c - t_slab) + self.heat_offset_kw))
 
-    def step(self, t_in: float, t_out: float, radiation: float, heating: bool, hours: float) -> float:
-        """Indoor temperature after `hours` (radiation in W/m²)."""
+    def step(
+        self, t_room: float, t_slab: float, t_out: float, radiation: float, heat_kw: float, hours: float
+    ) -> tuple[float, float]:
+        """(room, slab) after `hours` (radiation in W/m²)."""
+        q = self.slab_room_kw_per_k * (t_slab - t_room)
         gains = self.free_gain_kw + self.sun_aperture_m2 * radiation / 1000
-        heat = self.heat_kw(t_in, t_out) if heating else 0.0
-        return t_in + (heat + gains - self.ua_kw_per_k * (t_in - t_out)) * hours / self.capacity_kwh_per_k
+        t_slab += (heat_kw - q) * hours / self.slab_kwh_per_k
+        t_room += (q + gains - self.ua_kw_per_k * (t_room - t_out)) * hours / self.room_kwh_per_k
+        return t_room, t_slab
+
+
+def observe_slab(t_slab_start: float, heat_kw: list[float], t_room: float, hours: float, house: House = House()) -> float:
+    """The slab now, integrated from `t_slab_start` over the measured heat (one value per
+    `hours`), with the room held at `t_room`. Its time constant is ~11 h, so 48 h of history
+    forgets the start value."""
+    t = t_slab_start
+    for q in heat_kw:
+        t += (q - house.slab_room_kw_per_k * (t - t_room)) * hours / house.slab_kwh_per_k
+    return t

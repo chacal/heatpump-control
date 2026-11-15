@@ -48,8 +48,13 @@ A small deterministic Python service. Every 15 minutes:
 
 1. Read prices (today + tomorrow), the weather forecast (temperature, solar radiation), room
    temperatures, the fireplace sensor and the pump's state.
-2. Plan the next 24-36 h with a simple house model: heat loss ~140 W/K, ~15-18 kWh of heat per
-   degree of indoor temperature, free gains (sun, fireplace).
+2. Plan the next 24-36 h in hourly decisions with a house model of two nodes: the floor slab
+   (~12 kWh/K), heated by the pump, and the room (~8 kWh/K), which loses ~150 W/K to the outdoors
+   and gains ~0.8 kW plus sun (and later the fireplace). The pump's heat follows its own heating
+   curve from the active setpoint, so the model predicts what a setpoint does, not an on/off
+   switch. Fitted on the house's data (`analysis/calibrate_*.py`): the bedroom median 24 h ahead
+   within 0.4-0.5 K RMSE in autumn and winter. The slab isn't measured; it is estimated from
+   the last 48 h of the pump's heat, starting from the secondary return temperature.
 3. Write the setpoint only when the plan changes.
 
 Room temperatures come straight from MQTT. Readings outside 15-35 °C or older than a few minutes
