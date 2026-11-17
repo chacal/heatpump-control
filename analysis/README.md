@@ -33,5 +33,7 @@ docstring lists its arguments.
 | `top_days.py` | The costliest days |
 | `calibrate_house.py` | The planner's house model: slab and room, fitted on 12-h predictions |
 | `calibrate_heat.py` | The pump's heat through its heating curve; slab vs return temperature |
+| `refit_house.py` | Refit on Oct 15-Nov 17 2026, household electricity (I100) as a gain; held-out week |
+| `check_heat_offset.py` | The planner's closed loop (heat from the curve) 16 h ahead: heat and room bias |
 
 Findings are summarised in `docs/spec.md`; the figures there come from these scripts.

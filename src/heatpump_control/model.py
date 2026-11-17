@@ -11,6 +11,12 @@ set a flow temperature (Viessmann's published formula, which matched the measure
 Fitted on the house's own data (analysis/calibrate_house.py, calibrate_heat.py): Oct-Nov 2026
 for the house, Oct-Nov 2026 and Dec 2025-Feb 2026 for the heat. Predicting the bedroom median
 24 h ahead from the pump's settings alone: RMSE 0.42 K (autumn), 0.53 K (winter).
+
+Checked 2026-11-17 on 10-15..11-17 (analysis/refit_house.py, check_heat_offset.py): driven by the
+measured heat, the house nodes have ~no bias 16 h ahead (-0.05 K, RMSE 0.28); a free refit of all
+six overfits (slab 61 kWh/K, no better on a held-out week), household electricity as a gain adds
+0.03 K and would need its own forecast, so neither is used. The curve under-predicted heat by
+~8 % this autumn: the offset went 1.50 -> 1.70 kW (16-h room bias -0.10 -> -0.05 K).
 """
 
 from dataclasses import dataclass
@@ -43,7 +49,7 @@ class House:
     sun_aperture_m2: float = 8.5
     cop: float = 5.2
     heat_kw_per_k: float = 0.428
-    heat_offset_kw: float = 1.50
+    heat_offset_kw: float = 1.70  # 1.50 fitted 11-15; raised to the measured heat 10-25..11-17
     heat_max_kw: float = 5.41
 
     def heat_kw(self, flow_c: float, t_slab: float) -> float:
