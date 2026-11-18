@@ -35,5 +35,6 @@ docstring lists its arguments.
 | `calibrate_heat.py` | The pump's heat through its heating curve; slab vs return temperature |
 | `refit_house.py` | Refit on Oct 15-Nov 17 2026, household electricity (I100) as a gain; held-out week |
 | `check_heat_offset.py` | The planner's closed loop (heat from the curve) 16 h ahead: heat and room bias |
+| `setpoint_pairs.py` | Which idle/heat setpoint pair the planner should switch between; a flow-dependent COP |
 
 Findings are summarised in `docs/spec.md`; the figures there come from these scripts.
