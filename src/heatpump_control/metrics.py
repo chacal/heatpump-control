@@ -3,10 +3,12 @@
 `/metrics` in the text exposition format; `/plan.json` the latest round's log line;
 `/summary.json` the latest round in a few numbers per day, for a morning report (rounds.summary,
 plus `age_min`: minutes since that round, so a reader sees when rounds have stopped). All read
-one snapshot that the service replaces after each round.
+one snapshot that the service replaces after each round. The service can run a second server
+with only `/summary.json`, for the network (service.py).
 """
 
 import json
+import socket
 import threading
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -83,20 +85,64 @@ class Snapshot:
         return json.dumps(summary | {"age_min": round((now - res.at).total_seconds() / 60)}).encode()
 
 
-def serve_http(snapshot: Snapshot, host: str, port: int) -> ThreadingHTTPServer:
+MAX_CONNECTIONS = 4
+CONNECTION_DEADLINE_S = 15
+
+PATHS = ("/metrics", "/plan.json", "/summary.json")
+
+
+class BoundedServer(ThreadingHTTPServer):
+    """At most `max_connections` at once (more are closed at once), each closed after
+    CONNECTION_DEADLINE_S: a client on the network can't grow the threads or the memory, or hold
+    a connection open by trickling bytes."""
+
+    daemon_threads = True
+
+    def __init__(self, address, handler, max_connections: int):
+        super().__init__(address, handler)
+        self.slots = threading.BoundedSemaphore(max_connections)
+
+    def process_request(self, request, client_address):
+        if not self.slots.acquire(blocking=False):
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            self.slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        deadline = threading.Timer(CONNECTION_DEADLINE_S, _cut, (request,))
+        deadline.start()
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            deadline.cancel()
+            self.slots.release()
+
+
+def _cut(sock: socket.socket) -> None:
+    try:
+        sock.shutdown(socket.SHUT_RDWR)
+    except OSError:
+        pass
+
+
+def serve_http(snapshot: Snapshot, host: str, port: int, paths=PATHS, max_connections: int = MAX_CONNECTIONS) -> BoundedServer:
     class Handler(BaseHTTPRequestHandler):
-        timeout = 10  # a client that opens a connection and sends nothing doesn't hold a thread
+        timeout = 10  # per read; the server's deadline bounds the whole connection
 
         def do_GET(self):  # noqa: N802
+            if self.path not in paths:
+                self.send_error(404)
+                return
             if self.path == "/metrics":
                 body, ctype = snapshot.render().encode(), "text/plain; version=0.0.4"
             elif self.path == "/plan.json":
                 body, ctype = snapshot.plan_json(), "application/json"
-            elif self.path == "/summary.json":
-                body, ctype = snapshot.summary_json(datetime.now(UTC)), "application/json"
             else:
-                self.send_error(404)
-                return
+                body, ctype = snapshot.summary_json(datetime.now(UTC)), "application/json"
             self.send_response(200)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(body)))
@@ -106,6 +152,6 @@ def serve_http(snapshot: Snapshot, host: str, port: int) -> ThreadingHTTPServer:
         def log_message(self, *args):
             pass
 
-    server = ThreadingHTTPServer((host, port), Handler)
+    server = BoundedServer((host, port), Handler, max_connections)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server

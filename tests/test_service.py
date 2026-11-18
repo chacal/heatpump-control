@@ -1,12 +1,13 @@
 import json
 import os
+import time
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
 
 from heatpump_control import ha
-from heatpump_control.metrics import Snapshot
+from heatpump_control.metrics import Snapshot, serve_http
 from heatpump_control.rounds import Inputs, RoundError, ha_state, plan_round, round_log
 from heatpump_control.service import Service, next_round
 from heatpump_control.settings import AWAY_MIN_C, Settings
@@ -247,3 +248,51 @@ def test_summary_endpoint_adds_age():
     res = plan_round(NOW, 21.0, inputs())
     snap.update(result=res, summary=summary(res, "shadow"))
     assert json.loads(snap.summary_json(NOW + timedelta(minutes=20)))["age_min"] == 20
+
+
+def get(port, path):
+    import urllib.error
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=5) as r:
+            return r.status
+    except urllib.error.HTTPError as e:
+        return e.code
+
+
+def test_summary_only_server_and_connection_cap():
+    import socket
+
+    snap = Snapshot()
+    server = serve_http(snap, "127.0.0.1", 0, paths=("/summary.json",), max_connections=1)
+    port = server.server_address[1]
+    try:
+        assert get(port, "/summary.json") == 200 and get(port, "/metrics") == 404 and get(port, "/plan.json") == 404
+        held = socket.create_connection(("127.0.0.1", port))  # sends nothing: holds the only slot
+        time.sleep(0.2)
+        other = socket.create_connection(("127.0.0.1", port))
+        other.settimeout(2)
+        assert other.recv(1) == b""  # closed at once
+        other.close()
+        held.close()
+        time.sleep(0.2)
+        assert get(port, "/summary.json") == 200
+    finally:
+        server.shutdown()
+
+
+def test_deadline_cuts_a_trickling_client(monkeypatch):
+    import socket
+
+    import heatpump_control.metrics as metrics
+
+    monkeypatch.setattr(metrics, "CONNECTION_DEADLINE_S", 0.5)
+    server = serve_http(Snapshot(), "127.0.0.1", 0)
+    try:
+        c = socket.create_connection(("127.0.0.1", server.server_address[1]))
+        c.sendall(b"GET /metrics HTTP/1.1\r\n")
+        c.settimeout(3)
+        assert c.recv(100) == b""
+    finally:
+        server.shutdown()

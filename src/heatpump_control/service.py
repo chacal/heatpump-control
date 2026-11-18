@@ -6,9 +6,9 @@ the latest plan and its summary over HTTP (metrics.py), and one JSON line per ro
 file. Shadow mode writes nothing to the pump.
 
 Environment: MQTT_BROKER (host), MQTT_PORT (1883; 8883 means TLS), MQTT_USERNAME, MQTT_PASSWORD,
-MQTT_CLIENT_ID, PROMETHEUS_URL, HEATPUMP_LATLON ("lat,lon"), HTTP_HOST (127.0.0.1; 0.0.0.0 opens
-the read-only endpoints to the network), HTTP_PORT (9841), ROUND_LOG (a file to append the rounds
-to; none if unset).
+MQTT_CLIENT_ID, PROMETHEUS_URL, HEATPUMP_LATLON ("lat,lon"), HTTP_HOST (127.0.0.1), HTTP_PORT
+(9841; all endpoints), SUMMARY_PORT (none if unset; only /summary.json, on all addresses, for a
+reader on the network), ROUND_LOG (a file to append the rounds to; none if unset).
 """
 
 import json
@@ -124,6 +124,8 @@ class Service:
 
     def serve(self) -> None:
         serve_http(self.snapshot, self.env.get("HTTP_HOST", "127.0.0.1"), int(self.env.get("HTTP_PORT", "9841")))
+        if port := self.env.get("SUMMARY_PORT"):
+            serve_http(self.snapshot, "0.0.0.0", int(port), paths=("/summary.json",))
         self.client.connect_async(self.broker, self.port, keepalive=60)
         self.client.loop_start()
         time.sleep(FIRST_ROUND_AFTER_S)
