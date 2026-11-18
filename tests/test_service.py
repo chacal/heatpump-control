@@ -182,3 +182,22 @@ def test_against_a_real_broker():
     finally:
         svc.client.loop_stop(); probe.loop_stop()
         svc.client.disconnect(); probe.disconnect()
+
+
+def test_hostile_sensor_messages_are_ignored():
+    svc = Service({"MQTT_BROKER": "localhost"})
+    c = FakeClient()
+    now = datetime.now(UTC)
+    iso = lambda t: t.isoformat().replace("+00:00", "Z")
+    for payload in (
+        [],
+        {"temperature": 21.0, "ts": 12},
+        {"temperature": True, "ts": iso(now)},
+        {"temperature": 21.0, "ts": "2026-11-18T10:00:00"},  # no timezone
+        {"temperature": 21.0, "ts": "not a time"},
+        {"temperature": 30.0, "ts": iso(now + timedelta(days=365))},  # would pin the sensor
+    ):
+        svc._on_message(c, None, msg("/sensor/S202/m/state", payload))
+    assert svc.rooms.latest == {}
+    svc._on_message(c, None, msg("/sensor/S202/m/state", {"temperature": 21.0, "ts": iso(now)}))
+    assert svc.rooms.median(datetime.now(UTC)) == 21.0

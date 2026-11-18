@@ -14,6 +14,7 @@ from datetime import datetime, timedelta
 BEDROOMS = ("S202", "S203", "S204", "S211")
 VALID_C = (15.0, 35.0)
 MAX_AGE = timedelta(minutes=5)
+MAX_SKEW = timedelta(minutes=2)
 
 
 @dataclass
@@ -21,14 +22,24 @@ class Rooms:
     sensors: tuple[str, ...] = BEDROOMS
     latest: dict[str, tuple[datetime, float]] = field(default_factory=dict)
 
-    def update(self, topic: str, payload: dict) -> None:
+    def update(self, topic: str, payload: object, now: datetime | None = None) -> None:
+        """Keeps the newest valid reading per bedroom. Anything malformed is ignored: a reading
+        without a timezone, one stamped in the future (past `now` + MAX_SKEW; a retained one
+        could otherwise pin the sensor), or a temperature outside VALID_C."""
         parts = topic.strip("/").split("/")
         if len(parts) != 4 or parts[0] != "sensor" or parts[2:] != ["m", "state"] or parts[1] not in self.sensors:
             return
-        t = payload.get("temperature")
-        if not isinstance(t, (int, float)) or not VALID_C[0] <= t <= VALID_C[1]:
+        if not isinstance(payload, dict):
             return
-        at = datetime.fromisoformat(payload["ts"].replace("Z", "+00:00"))
+        t, ts = payload.get("temperature"), payload.get("ts")
+        if isinstance(t, bool) or not isinstance(t, (int, float)) or not VALID_C[0] <= t <= VALID_C[1] or not isinstance(ts, str):
+            return
+        try:
+            at = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        except ValueError:
+            return
+        if at.tzinfo is None or (now is not None and at > now + MAX_SKEW):
+            return
         if parts[1] not in self.latest or at > self.latest[parts[1]][0]:
             self.latest[parts[1]] = (at, float(t))
 

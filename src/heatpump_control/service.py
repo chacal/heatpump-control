@@ -90,14 +90,14 @@ class Service:
             else:
                 payload = json.loads(msg.payload)
                 with self.lock:
-                    self.rooms.update(msg.topic, payload)
-        except (ValueError, KeyError, TypeError) as e:
-            log.debug("ignored message on %s: %s", msg.topic, e)
+                    self.rooms.update(msg.topic, payload, datetime.now(UTC))
+        except Exception as e:  # any publisher's bad message must not stop paho's thread
+            log.debug("ignored message on %s: %r", msg.topic, e)
 
     def run_round(self, now: datetime) -> None:
-        with self.lock:
-            t_room, settings = self.rooms.median(now), self.settings
         try:
+            with self.lock:
+                t_room, settings = self.rooms.median(now), self.settings
             inputs = fetch_inputs(now, self.env.get("PROMETHEUS_URL", "http://localhost:9090"), self.env["HEATPUMP_LATLON"])
             res = plan_round(now, t_room, inputs, settings)
         except (RoundError, OSError, ValueError, KeyError) as e:
