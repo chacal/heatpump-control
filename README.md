@@ -6,8 +6,9 @@ home-automation app; public in case it is useful to others.
 
 **Status:** M2 (shadow mode): `python -m heatpump_control serve` (the image's entrypoint) reads
 the bedroom sensors and its controls from MQTT, plans every 15 minutes and publishes Home
-Assistant entities (MQTT discovery), Prometheus metrics (`:9841/metrics`) and the latest plan
-(`:9841/plan.json`); it writes nothing to the pump. Settings in
+Assistant entities (MQTT discovery), Prometheus metrics (`:9841/metrics`), the latest plan
+(`:9841/plan.json`) and its summary per day for a morning report (`:9841/summary.json`); it
+writes nothing to the pump. Settings in
 [`service.py`](src/heatpump_control/service.py)'s docstring. `python -m heatpump_control plan`
 runs one round with room readings on stdin. Start with [`docs/spec.md`](docs/spec.md).
 

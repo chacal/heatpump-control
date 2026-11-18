@@ -214,3 +214,36 @@ def test_a_round_publishes_state_and_settings(monkeypatch):
     topics = {t: p for t, p, retain in svc.client.published if retain}
     assert json.loads(topics[ha.STATE])["bedrooms"] == 21.0
     assert json.loads(topics[ha.SETTINGS]) == json.loads(Settings().to_json())
+
+
+def test_summary_splits_windows_per_local_day():
+    from heatpump_control.rounds import summary
+
+    res = plan_round(NOW, 21.0, inputs())
+    s = summary(res, "shadow")
+    json.dumps(s)
+    assert s["at"] == "2026-11-18T18:00+02:00" and s["mode"] == "shadow"
+    assert [d["date"] for d in s["days"]] == ["2026-11-18", "2026-11-19", "2026-11-20"]
+    today, tomorrow = s["days"][0], s["days"][1]
+    assert today["from"] == "18:00" and today["until"] == "24:00" and tomorrow["from"] == "00:00"
+    # The program heats Normal 21-07: split at midnight, and today's run starts at 21:00.
+    assert today["program_heating"] == ["21:00-24:00"]
+    assert tomorrow["program_heating"][0] == "00:00-07:00"
+    # Cheap 00-05 UTC = 02-07 local; the first of equal hours wins.
+    assert tomorrow["cheapest_hour"] == {"at": "02:00", "c_kwh": round(30 * 1.255 / 10, 1)}
+    assert tomorrow["dearest_hour"] == {"at": "00:00", "c_kwh": round(150 * 1.255 / 10, 1)}
+    for d in s["days"]:
+        assert d["bedrooms_min_c"] <= d["bedrooms_max_c"]
+        for w in d["heating"]:
+            a, b = w.split("-")
+            assert a < b
+
+
+def test_summary_endpoint_adds_age():
+    from heatpump_control.rounds import summary
+
+    snap = Snapshot()
+    assert snap.summary_json(NOW) == b"null"
+    res = plan_round(NOW, 21.0, inputs())
+    snap.update(result=res, summary=summary(res, "shadow"))
+    assert json.loads(snap.summary_json(NOW + timedelta(minutes=20)))["age_min"] == 20

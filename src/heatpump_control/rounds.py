@@ -1,10 +1,11 @@
 """One planning round, shared by the one-shot `plan` command and the `serve` loop: fetch the
 inputs, estimate the slab, plan, and describe the result for the log, Home Assistant and metrics."""
 
+from collections import defaultdict
 from dataclasses import dataclass, replace
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
-from heatpump_control.controller import MAX_HORIZON, Round, build_slots, decide
+from heatpump_control.controller import MAX_HORIZON, SLOT, Round, build_slots, decide
 from heatpump_control.model import HEAT_KW_PER_SPEED_PCT, RETURN_MINUS_SLAB_K, Curve, observe_slab
 from heatpump_control.planner import Limits
 from heatpump_control.program import HELSINKI
@@ -62,16 +63,21 @@ def plan_round(now: datetime, t_room: float | None, inputs: Inputs, settings: Se
     return Result(now, t_room, t_slab, inputs, r, settings)
 
 
+def prices_until(prices: Series) -> datetime | None:
+    """End of the last price; when Energy-Charts has tomorrow's prices shows as the first round
+    where it jumps."""
+    return prices[-1][0] + (prices[-1][0] - prices[-2][0]) if len(prices) > 1 else None
+
+
 def round_log(res: Result) -> dict:
     """One round as a JSON-able dict: inputs and predictions per slot, for comparing the
     predictions with what the sensors measure later."""
     r, prices = res.round, res.inputs.prices
-    # When Energy-Charts has tomorrow's prices shows as the first round whose prices_until jumps.
-    prices_until = prices[-1][0] + (prices[-1][0] - prices[-2][0]) if len(prices) > 1 else None
+    until = prices_until(prices)
     return {
         "at": res.at.isoformat(), "t_room": res.t_room, "t_slab": res.t_slab, "pump": res.inputs.pump,
         "band": list(res.settings.band()),
-        "prices_until": prices_until.isoformat() if prices_until else None,
+        "prices_until": until.isoformat() if until else None,
         "plan_eur": r.plan.cost_eur, "baseline_eur": r.baseline.cost_eur, "savings_eur": r.savings_eur,
         "starts": r.plan.starts, "write_penalty_eur": r.write_penalty_eur, "over_write_cap": r.over_write_cap,
         "writes": [[w.at.isoformat(), w.register, w.value] for w in r.setpoints.writes],
@@ -108,4 +114,61 @@ def ha_state(res: Result, mode: str) -> dict:
         "plan_eur": round(res.round.plan.cost_eur, 2),
         "savings_eur": round(res.round.savings_eur, 2),
         "last_round": res.at.isoformat(),
+    }
+
+
+def _hhmm(t: datetime, day: date) -> str:
+    return "24:00" if t.date() > day else t.strftime("%H:%M")
+
+
+def _windows(starts: list[datetime], flags: list[bool]) -> dict[date, list[str]]:
+    """Runs of consecutive true slots as "HH:MM-HH:MM" per local day, split at midnight."""
+    out: dict[date, list[str]] = defaultdict(list)
+    run = None
+    for at, f in zip(starts + [starts[-1] + SLOT], flags + [False]):
+        if f and run is None:
+            run = at
+        elif not f and run is not None:
+            end, day = at, run
+            while day < end:
+                midnight = datetime.combine(day.date() + timedelta(days=1), datetime.min.time(), HELSINKI)
+                out[day.date()].append(f"{day.strftime('%H:%M')}-{_hhmm(min(end, midnight), day.date())}")
+                day = midnight
+            run = None
+    return out
+
+
+def summary(res: Result, mode: str) -> dict:
+    """The round in a few numbers per local day, for a morning report read by people or an LLM:
+    when the plan and the pump's own program heat, the bedrooms' predicted range, and the
+    cheapest and dearest hours (spot incl. VAT, c/kWh)."""
+    r, vat = res.round, Limits().vat
+    starts = [s.start.astimezone(HELSINKI) for s in r.slots]
+    plan_w, program_w = _windows(starts, list(r.plan.heating)), _windows(starts, list(r.baseline.heating))
+    days: dict[date, dict] = {}
+    hours: dict[tuple[date, int], list[float]] = defaultdict(list)
+    for at, slot, t in zip(starts, r.slots, r.plan.t_room):
+        d = days.setdefault(at.date(), {"from": at.strftime("%H:%M"), "t": []})
+        d["until"] = _hhmm(at + SLOT, at.date())
+        d["t"].append(t)
+        hours[(at.date(), at.hour)].append(slot.price * (1 + vat) / 10)
+    out = []
+    for day, d in days.items():
+        hourly = {h: sum(p) / len(p) for (dd, h), p in hours.items() if dd == day}
+        cheap, dear = min(hourly, key=hourly.get), max(hourly, key=hourly.get)
+        out.append({
+            "date": day.isoformat(), "from": d["from"], "until": d["until"],
+            "heating": plan_w.get(day, []), "program_heating": program_w.get(day, []),
+            "bedrooms_min_c": round(min(d["t"]), 1), "bedrooms_max_c": round(max(d["t"]), 1),
+            "cheapest_hour": {"at": f"{cheap:02d}:00", "c_kwh": round(hourly[cheap], 1)},
+            "dearest_hour": {"at": f"{dear:02d}:00", "c_kwh": round(hourly[dear], 1)},
+        })
+    until = prices_until(res.inputs.prices)
+    return {
+        "at": res.at.astimezone(HELSINKI).isoformat(timespec="minutes"), "timezone": "Europe/Helsinki",
+        "mode": mode, "bedrooms_now_c": round(res.t_room, 1), "band_c": list(res.settings.band()),
+        "prices_until": until.astimezone(HELSINKI).isoformat(timespec="minutes") if until else None,
+        "plan_eur": round(r.plan.cost_eur, 2), "program_eur": round(r.baseline.cost_eur, 2),
+        "savings_eur": round(r.savings_eur, 2), "planned_writes": len(r.setpoints.writes),
+        "days": out,
     }

@@ -1,10 +1,10 @@
 """Commands:
 
-    python -m heatpump_control plan [--json] < sensor-archive-lines.jsonl
+    python -m heatpump_control plan [--json | --summary] < sensor-archive-lines.jsonl
     python -m heatpump_control serve
 
 `plan`: one shadow round with the room readings from stdin as sensor-archive JSONL; prints the
-plan (or only its JSON log line). `serve`: the long-running service (service.py). Settings from
+plan (or only its JSON log line, or the `/summary.json` the service would serve). `serve`: the long-running service (service.py). Settings from
 the environment: HEATPUMP_LATLON ("lat,lon" for the forecast; not in this public repo),
 PROMETHEUS_URL; `serve` takes more (service.py).
 """
@@ -17,10 +17,10 @@ from datetime import UTC, datetime
 
 from heatpump_control.program import HELSINKI
 from heatpump_control.rooms import Rooms
-from heatpump_control.rounds import RoundError, fetch_inputs, plan_round, round_log
+from heatpump_control.rounds import RoundError, fetch_inputs, plan_round, round_log, summary
 
 
-def run_plan(now: datetime, as_json: bool = False) -> int:
+def run_plan(now: datetime, as_json: bool = False, as_summary: bool = False) -> int:
     rooms = Rooms()
     for line in sys.stdin:
         if line.strip():
@@ -34,6 +34,9 @@ def run_plan(now: datetime, as_json: bool = False) -> int:
     except RoundError as e:
         print(e, file=sys.stderr)
         return 1
+    if as_summary:
+        print(json.dumps(summary(res, "shadow"), indent=1))
+        return 0
     entry = round_log(res)
     if as_json:
         print(json.dumps(entry))
@@ -62,12 +65,13 @@ def main() -> int:
     parser = argparse.ArgumentParser(prog="heatpump_control")
     parser.add_argument("command", choices=["plan", "serve"])
     parser.add_argument("--json", action="store_true", help="plan: print only the round's JSON log line")
+    parser.add_argument("--summary", action="store_true", help="plan: print only the round's summary")
     args = parser.parse_args()
     if args.command == "serve":
         from heatpump_control.service import main as serve
 
         return serve()
-    return run_plan(datetime.now(UTC), args.json)
+    return run_plan(datetime.now(UTC), args.json, args.summary)
 
 
 if __name__ == "__main__":

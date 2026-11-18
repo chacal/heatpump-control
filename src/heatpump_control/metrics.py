@@ -1,11 +1,14 @@
-"""Prometheus metrics and the latest plan over HTTP (stdlib `http.server`).
+"""Prometheus metrics and the latest plan over HTTP (stdlib `http.server`), read-only.
 
-`/metrics` in the text exposition format; `/plan.json` the latest round's log line (read-only,
-for a morning report). Both read one snapshot that the service replaces after each round.
+`/metrics` in the text exposition format; `/plan.json` the latest round's log line;
+`/summary.json` the latest round in a few numbers per day, for a morning report (rounds.summary,
+plus `age_min`: minutes since that round, so a reader sees when rounds have stopped). All read
+one snapshot that the service replaces after each round.
 """
 
 import json
 import threading
+from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from heatpump_control.rounds import Result
@@ -16,6 +19,7 @@ class Snapshot:
         self._lock = threading.Lock()
         self.result: Result | None = None
         self.log: dict | None = None
+        self.summary: dict | None = None
         self.rounds_ok = 0
         self.rounds_failed = 0
         self.last_error = ""
@@ -71,14 +75,25 @@ class Snapshot:
         with self._lock:
             return json.dumps(self.log).encode() if self.log else b"null"
 
+    def summary_json(self, now: datetime) -> bytes:
+        with self._lock:
+            res, summary = self.result, self.summary
+        if res is None or summary is None:
+            return b"null"
+        return json.dumps(summary | {"age_min": round((now - res.at).total_seconds() / 60)}).encode()
+
 
 def serve_http(snapshot: Snapshot, host: str, port: int) -> ThreadingHTTPServer:
     class Handler(BaseHTTPRequestHandler):
+        timeout = 10  # a client that opens a connection and sends nothing doesn't hold a thread
+
         def do_GET(self):  # noqa: N802
             if self.path == "/metrics":
                 body, ctype = snapshot.render().encode(), "text/plain; version=0.0.4"
             elif self.path == "/plan.json":
                 body, ctype = snapshot.plan_json(), "application/json"
+            elif self.path == "/summary.json":
+                body, ctype = snapshot.summary_json(datetime.now(UTC)), "application/json"
             else:
                 self.send_error(404)
                 return

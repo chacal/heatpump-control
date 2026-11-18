@@ -1,13 +1,14 @@
 """The long-running service (`python -m heatpump_control serve`), shadow mode.
 
 Reads the bedroom sensors and the owner's controls from MQTT, plans every 15 minutes (30 s past
-each quarter hour), and publishes the result: Home Assistant entities (ha.py), Prometheus metrics
-and the latest plan over HTTP (metrics.py), and one JSON line per round to a log file. Shadow
-mode writes nothing to the pump.
+each quarter hour), and publishes the result: Home Assistant entities (ha.py), Prometheus metrics,
+the latest plan and its summary over HTTP (metrics.py), and one JSON line per round to a log
+file. Shadow mode writes nothing to the pump.
 
 Environment: MQTT_BROKER (host), MQTT_PORT (1883; 8883 means TLS), MQTT_USERNAME, MQTT_PASSWORD,
-MQTT_CLIENT_ID, PROMETHEUS_URL, HEATPUMP_LATLON ("lat,lon"), HTTP_HOST (127.0.0.1), HTTP_PORT
-(9841), ROUND_LOG (a file to append the rounds to; none if unset).
+MQTT_CLIENT_ID, PROMETHEUS_URL, HEATPUMP_LATLON ("lat,lon"), HTTP_HOST (127.0.0.1; 0.0.0.0 opens
+the read-only endpoints to the network), HTTP_PORT (9841), ROUND_LOG (a file to append the rounds
+to; none if unset).
 """
 
 import json
@@ -23,7 +24,7 @@ import paho.mqtt.client as mqtt
 from heatpump_control import ha
 from heatpump_control.metrics import Snapshot, serve_http
 from heatpump_control.rooms import BEDROOMS, Rooms
-from heatpump_control.rounds import RoundError, fetch_inputs, ha_state, plan_round, round_log
+from heatpump_control.rounds import RoundError, fetch_inputs, ha_state, plan_round, round_log, summary
 from heatpump_control.settings import Settings
 
 log = logging.getLogger("heatpump_control")
@@ -108,10 +109,11 @@ class Service:
             self.snapshot.count(False, repr(e))
             log.exception("round failed")
             return
+        mode = MODE if settings.enabled else "off"
         entry = round_log(res)
-        self.snapshot.update(result=res, log=entry)
+        self.snapshot.update(result=res, log=entry, summary=summary(res, mode))
         self.snapshot.count(True)
-        self.client.publish(ha.STATE, json.dumps(ha_state(res, MODE if settings.enabled else "off")), qos=1, retain=True)
+        self.client.publish(ha.STATE, json.dumps(ha_state(res, mode)), qos=1, retain=True)
         # The settings too: by now any retained ones have been read back, and HA's switches and
         # numbers show unknown until the settings topic has a value.
         self.client.publish(ha.SETTINGS, settings.to_json(), qos=1, retain=True)
