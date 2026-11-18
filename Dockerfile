@@ -11,5 +11,5 @@ RUN useradd --system --uid 65532 --no-create-home app
 COPY --from=build /app /app
 ENV PATH="/app/.venv/bin:$PATH" PYTHONUNBUFFERED=1
 USER 65532
-# No controller yet (spec milestone M1/M2); the entrypoint is a placeholder.
-ENTRYPOINT ["python", "-c", "import heatpump_control; print(heatpump_control.__doc__)"]
+# Shadow mode (M2): plans and publishes, writes nothing to the pump. Settings: service.py.
+ENTRYPOINT ["python", "-m", "heatpump_control", "serve"]

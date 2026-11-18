@@ -3,7 +3,9 @@ name = "heatpump-control"
 version = "0.0.0"
 description = "Spot-price controller for a Viessmann Vitocal 333-G"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "paho-mqtt>=2.1",
+]
 
 [dependency-groups]
 dev = ["pytest>=8"]
