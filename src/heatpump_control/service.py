@@ -112,6 +112,9 @@ class Service:
         self.snapshot.update(result=res, log=entry)
         self.snapshot.count(True)
         self.client.publish(ha.STATE, json.dumps(ha_state(res, MODE if settings.enabled else "off")), qos=1, retain=True)
+        # The settings too: by now any retained ones have been read back, and HA's switches and
+        # numbers show unknown until the settings topic has a value.
+        self.client.publish(ha.SETTINGS, settings.to_json(), qos=1, retain=True)
         if path := self.env.get("ROUND_LOG"):
             with open(path, "a") as f:
                 f.write(json.dumps(entry) + "\n")

@@ -46,7 +46,6 @@ NUMBERS = {
 def _base(obj: str) -> dict:
     return {
         "unique_id": f"{NODE}_{obj}",
-        "object_id": f"{NODE}_{obj}",
         "device": DEVICE,
         "availability_topic": AVAILABILITY,
     }

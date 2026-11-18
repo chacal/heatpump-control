@@ -201,3 +201,16 @@ def test_hostile_sensor_messages_are_ignored():
     assert svc.rooms.latest == {}
     svc._on_message(c, None, msg("/sensor/S202/m/state", {"temperature": 21.0, "ts": iso(now)}))
     assert svc.rooms.median(datetime.now(UTC)) == 21.0
+
+
+def test_a_round_publishes_state_and_settings(monkeypatch):
+    import heatpump_control.service as service
+
+    monkeypatch.setattr(service, "fetch_inputs", lambda now, prom, latlon: inputs())
+    svc = Service({"MQTT_BROKER": "localhost", "HEATPUMP_LATLON": "0,0"})
+    svc.client = FakeClient()
+    svc._on_message(svc.client, None, msg("/sensor/S202/m/state", {"temperature": 21.0, "ts": NOW.isoformat()}))
+    svc.run_round(NOW)
+    topics = {t: p for t, p, retain in svc.client.published if retain}
+    assert json.loads(topics[ha.STATE])["bedrooms"] == 21.0
+    assert json.loads(topics[ha.SETTINGS]) == json.loads(Settings().to_json())
