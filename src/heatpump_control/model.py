@@ -47,10 +47,17 @@ class House:
     ua_kw_per_k: float = 0.150
     free_gain_kw: float = 0.83
     sun_aperture_m2: float = 8.5
-    cop: float = 5.2
+    cop: float = 5.2  # mean COP (analyses; the planner uses cop_at)
+    # COP at a flow temperature: power reads 2026-11-16..18, heating only, flow < 40 °C
+    # (-2.2 %/K; analysis/setpoint_pairs.py).
+    cop_at_28: float = 5.65
+    cop_per_k: float = 0.124
     heat_kw_per_k: float = 0.428
     heat_offset_kw: float = 1.70  # 1.50 fitted 11-15; raised to the measured heat 10-25..11-17
     heat_max_kw: float = 5.41
+
+    def cop_at(self, flow_c: float) -> float:
+        return max(1.5, self.cop_at_28 - self.cop_per_k * (flow_c - 28.3))
 
     def heat_kw(self, flow_c: float, t_slab: float) -> float:
         return min(self.heat_max_kw, max(0.0, self.heat_kw_per_k * (flow_c - t_slab) + self.heat_offset_kw))

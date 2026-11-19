@@ -43,9 +43,17 @@ class Result:
     inputs: Inputs
     round: Round
     settings: Settings
+    limits: Limits
 
 
-def plan_round(now: datetime, t_room: float | None, inputs: Inputs, settings: Settings = Settings()) -> Result:
+def env_limits(env) -> Limits:
+    """PRICE_EXTRA_C_KWH: per-kWh costs on top of spot (margin, transfer, tax), c/kWh incl. VAT."""
+    return Limits(extra_c_kwh=float(env.get("PRICE_EXTRA_C_KWH", "0")))
+
+
+def plan_round(
+    now: datetime, t_room: float | None, inputs: Inputs, settings: Settings = Settings(), limits: Limits = Limits()
+) -> Result:
     if t_room is None:
         raise RoundError("no fresh bedroom readings")
     if inputs.ret_start is None or len(inputs.speeds) < 400:
@@ -58,9 +66,9 @@ def plan_round(now: datetime, t_room: float | None, inputs: Inputs, settings: Se
     if not slots:
         raise RoundError("no prices or forecast for the next slot")
     registers = {"normal": pump["normal_c"], "reduced": pump["reduced_c"]}
-    limits = replace(Limits(), band_c=settings.band())
+    limits = replace(limits, band_c=settings.band())
     r = decide(slots, t_room, t_slab, registers, Curve(pump["curve_level"], pump["curve_slope"]), limits=limits)
-    return Result(now, t_room, t_slab, inputs, r, settings)
+    return Result(now, t_room, t_slab, inputs, r, settings, limits)
 
 
 def prices_until(prices: Series) -> datetime | None:
@@ -78,7 +86,9 @@ def round_log(res: Result) -> dict:
         "at": res.at.isoformat(), "t_room": res.t_room, "t_slab": res.t_slab, "pump": res.inputs.pump,
         "band": list(res.settings.band()),
         "prices_until": until.isoformat() if until else None,
+        "extra_c_kwh": res.limits.extra_c_kwh,
         "plan_eur": r.plan.cost_eur, "baseline_eur": r.baseline.cost_eur, "savings_eur": r.savings_eur,
+        "heat_left_eur": r.heat_left_eur,
         "starts": r.plan.starts, "write_penalty_eur": r.write_penalty_eur, "over_write_cap": r.over_write_cap,
         "writes": [[w.at.isoformat(), w.register, w.value] for w in r.setpoints.writes],
         "slots": {
@@ -141,8 +151,9 @@ def _windows(starts: list[datetime], flags: list[bool]) -> dict[date, list[str]]
 def summary(res: Result, mode: str) -> dict:
     """The round in a few numbers per local day, for a morning report read by people or an LLM:
     when the plan and the pump's own program heat, the bedrooms' predicted range, and the
-    cheapest and dearest hours (spot incl. VAT, c/kWh)."""
-    r, vat = res.round, Limits().vat
+    cheapest and dearest hours (the full price: spot, VAT and the per-kWh extras, c/kWh). Savings
+    are program minus plan plus the value of the extra heat the plan leaves in the house."""
+    r = res.round
     starts = [s.start.astimezone(HELSINKI) for s in r.slots]
     plan_w, program_w = _windows(starts, list(r.plan.heating)), _windows(starts, list(r.baseline.heating))
     days: dict[date, dict] = {}
@@ -151,7 +162,7 @@ def summary(res: Result, mode: str) -> dict:
         d = days.setdefault(at.date(), {"from": at.strftime("%H:%M"), "t": []})
         d["until"] = _hhmm(at + SLOT, at.date())
         d["t"].append(t)
-        hours[(at.date(), at.hour)].append(slot.price * (1 + vat) / 10)
+        hours[(at.date(), at.hour)].append(res.limits.eur_per_kwh(slot.price) * 100)
     out = []
     for day, d in days.items():
         hourly = {h: sum(p) / len(p) for (dd, h), p in hours.items() if dd == day}
@@ -169,6 +180,7 @@ def summary(res: Result, mode: str) -> dict:
         "mode": mode, "bedrooms_now_c": round(res.t_room, 1), "band_c": list(res.settings.band()),
         "prices_until": until.astimezone(HELSINKI).isoformat(timespec="minutes") if until else None,
         "plan_eur": round(r.plan.cost_eur, 2), "program_eur": round(r.baseline.cost_eur, 2),
-        "savings_eur": round(r.savings_eur, 2), "planned_writes": len(r.setpoints.writes),
+        "heat_left_eur": round(r.heat_left_eur, 2), "savings_eur": round(r.savings_eur, 2),
+        "planned_writes": len(r.setpoints.writes),
         "days": out,
     }

@@ -15,6 +15,9 @@ flow-dependent COP ("cop-aware").
 
 Baseline: the pump's own time program at 18 / 23 (Normal 21-07), no writes.
 
+The planner itself is COP-aware since 2026-11-19 (with this COP), so rerunning against a later
+src/ makes the plain rows COP-aware too; the results below are from cf892f2 and 9896f22.
+
 Result 2026-11-18 (winter 2025-12..02 / autumn 2026-10-15..11-10, €): program 163.8 / 4.85;
 planner 18/23 161.9 / 2.77, cop-aware 156.3 / 2.85; 16/23 159.5 / 2.25, cop-aware 157.0 / 2.48;
 18/26 172.4 / 2.70, cop-aware 160.7 / 2.69; 16/26 176.2 / 2.34, cop-aware 171.1 / 2.34. A hotter

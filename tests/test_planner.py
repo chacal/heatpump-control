@@ -2,7 +2,7 @@ from datetime import UTC, datetime, timedelta
 
 from heatpump_control.controller import decide
 from heatpump_control.model import Curve, House, observe_slab
-from heatpump_control.planner import Slot, hour_blocks, plan, simulate
+from heatpump_control.planner import Limits, Slot, hour_blocks, plan, simulate
 from heatpump_control.program import Program, setpoint_writes
 
 T0 = datetime(2026, 1, 14, 22, 0, tzinfo=UTC)  # midnight in Helsinki
@@ -89,3 +89,15 @@ def test_decide_keeps_writes_under_the_cap():
     assert not r.over_write_cap
     assert max(r.setpoints.per_day().values(), default=0) <= 4
     assert r.savings_eur > -0.5
+
+
+def test_heat_costs_more_per_kwh_at_a_hotter_flow():
+    house, curve, lim = House(), Curve(), Limits(extra_c_kwh=6.0)
+    assert lim.eur_per_kwh(100.0) == 100 / 1000 * 1.255 + 0.06
+    assert house.cop_at(curve.flow_c(23, -10)) < house.cop_at(curve.flow_c(18, -10))
+    assert abs(house.cop_at(28.3) - 5.65) < 1e-9 and house.cop_at(80) == 1.5
+    # One hour of heat on a cold day: electricity = heat / COP at the 23 °C flow, full price.
+    s = hourly([100.0], t_out=-10.0)
+    p = simulate(s, 21.0, 24.0, [True] * 4, house, curve, (18.0, 23.0), lim)
+    heat = house.heat_kw(curve.flow_c(23, -10), 24.0)
+    assert 0.9 < p.cost_eur / (heat * lim.eur_per_kwh(100.0) / house.cop_at(curve.flow_c(23, -10))) < 1.1

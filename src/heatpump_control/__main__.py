@@ -6,7 +6,7 @@
 `plan`: one shadow round with the room readings from stdin as sensor-archive JSONL; prints the
 plan (or only its JSON log line, or the `/summary.json` the service would serve). `serve`: the long-running service (service.py). Settings from
 the environment: HEATPUMP_LATLON ("lat,lon" for the forecast; not in this public repo),
-PROMETHEUS_URL; `serve` takes more (service.py).
+PROMETHEUS_URL, PRICE_EXTRA_C_KWH (service.py); `serve` takes more (service.py).
 """
 
 import argparse
@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 
 from heatpump_control.program import HELSINKI
 from heatpump_control.rooms import Rooms
-from heatpump_control.rounds import RoundError, fetch_inputs, plan_round, round_log, summary
+from heatpump_control.rounds import RoundError, env_limits, fetch_inputs, plan_round, round_log, summary
 
 
 def run_plan(now: datetime, as_json: bool = False, as_summary: bool = False) -> int:
@@ -30,7 +30,7 @@ def run_plan(now: datetime, as_json: bool = False, as_summary: bool = False) -> 
         t_room = rooms.median(now)
         if t_room is None:
             raise RoundError("no fresh bedroom readings")
-        res = plan_round(now, t_room, fetch_inputs(now, prometheus, os.environ["HEATPUMP_LATLON"]))
+        res = plan_round(now, t_room, fetch_inputs(now, prometheus, os.environ["HEATPUMP_LATLON"]), limits=env_limits(os.environ))
     except RoundError as e:
         print(e, file=sys.stderr)
         return 1
@@ -53,7 +53,7 @@ def run_plan(now: datetime, as_json: bool = False, as_summary: bool = False) -> 
           f"{' OVER CAP' if r.over_write_cap else ''}")
     print("time   c/kWh  out  sun  heat  room  slab  program  room")
     for s, h, tr, ts, b, br in zip(slots, r.plan.heating, r.plan.t_room, r.plan.t_slab, r.baseline.heating, r.baseline.t_room):
-        print(f"{s.start.astimezone(HELSINKI):%H:%M} {s.price / 10 * 1.255:6.2f} {s.t_out:4.1f} {s.radiation:4.0f}"
+        print(f"{s.start.astimezone(HELSINKI):%H:%M} {res.limits.eur_per_kwh(s.price) * 100:6.2f} {s.t_out:4.1f} {s.radiation:4.0f}"
               f"  {'##' if h else '..'}  {tr:5.2f} {ts:5.1f}  {'##' if b else '..'}  {br:5.2f}")
     for w in r.setpoints.writes:
         print(f"write {w.at.astimezone(HELSINKI):%a %H:%M} {w.register} = {w.value:g}")

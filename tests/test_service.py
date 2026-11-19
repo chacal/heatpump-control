@@ -296,3 +296,14 @@ def test_deadline_cuts_a_trickling_client(monkeypatch):
         assert c.recv(100) == b""
     finally:
         server.shutdown()
+
+
+def test_summary_prices_include_the_extras_and_savings_add_up():
+    from heatpump_control.planner import Limits
+    from heatpump_control.rounds import env_limits, summary
+
+    assert env_limits({}).extra_c_kwh == 0.0
+    assert env_limits({"PRICE_EXTRA_C_KWH": "6.28"}).extra_c_kwh == 6.28
+    s = summary(plan_round(NOW, 21.0, inputs(), limits=Limits(extra_c_kwh=6.28)), "shadow")
+    assert s["days"][1]["cheapest_hour"]["c_kwh"] == round(30 * 1.255 / 10 + 6.28, 1)
+    assert abs(s["program_eur"] - s["plan_eur"] + s["heat_left_eur"] - s["savings_eur"]) <= 0.015

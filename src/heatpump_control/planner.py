@@ -6,7 +6,9 @@ slab temperatures on a grid, and whether the previous hour asked for heat. Askin
 the active setpoint holds the heat value, otherwise the idle value; the pump's curve turns that
 into heat (model.py), so even "idle" heats on a cold enough day.
 
-An hour costs its electricity at spot price; a start costs a penalty (long runs are healthy for
+An hour costs its electricity at the full per-kWh price (spot with VAT plus `extra_c_kwh`:
+margin, transfer and tax) over the COP at that action's flow temperature, so a hotter flow costs
+more per kWh of heat; a start costs a penalty (long runs are healthy for
 the compressor); the room outside the comfort band costs a steep penalty (a soft bound, so a
 house that starts outside the band still gets a plan), and below the target a weak one (a
 tie-breaker: with flat prices the house stays near the target instead of drifting to the band's
@@ -40,9 +42,14 @@ class Limits:
     target_c: float = 21.0
     target_penalty_eur_per_k_h: float = 0.01
     vat: float = 0.255
+    extra_c_kwh: float = 0.0  # per-kWh costs on top of spot (margin, transfer, tax), c/kWh incl. VAT
     room_grid_k: float = 0.05
     slab_grid_k: float = 0.5
     slab_range_c: tuple[float, float] = (16.0, 36.0)
+
+    def eur_per_kwh(self, spot_eur_mwh: float) -> float:
+        """The full electricity price: spot with VAT plus the per-kWh extras."""
+        return spot_eur_mwh / 1000 * (1 + self.vat) + self.extra_c_kwh / 100
 
 
 @dataclass(frozen=True)
@@ -50,7 +57,7 @@ class Plan:
     heating: list[bool]  # per slot
     t_room: list[float]  # predicted bedroom median at the end of each slot
     t_slab: list[float]
-    cost_eur: float  # electricity at spot price incl. VAT, no penalties
+    cost_eur: float  # electricity at the full per-kWh price, no penalties
     starts: int
 
 
@@ -72,7 +79,9 @@ class _Sim:
     def __init__(self, slots, house: House, curve: Curve, setpoints: tuple[float, float], limits: Limits):
         self.h, self.limits = house, limits
         self.flow = [[curve.flow_c(setpoints[a], s.t_out) for s in slots] for a in (0, 1)]
-        self.eur_per_kwh_heat = [s.price / 1000 * (1 + limits.vat) / house.cop for s in slots]
+        self.eur_per_kwh = [limits.eur_per_kwh(s.price) for s in slots]
+        # Electricity per kWh of heat, per action: the COP falls as the flow rises.
+        self.eur_per_kwh_heat = [[p / house.cop_at(f) for p, f in zip(self.eur_per_kwh, self.flow[a])] for a in (0, 1)]
         self.gains = [house.free_gain_kw + house.sun_aperture_m2 * s.radiation / 1000 for s in slots]
         self.t_out = [s.t_out for s in slots]
 
@@ -87,10 +96,10 @@ class _Sim:
         h = self.h
         k_sr, ua, cs, cr = h.slab_room_kw_per_k, h.ua_kw_per_k, h.slab_kwh_per_k, h.room_kwh_per_k
         eur = pen = 0.0
-        flow = self.flow[a]
+        flow, price = self.flow[a], self.eur_per_kwh_heat[a]
         for i in idx:
             heat = min(h.heat_max_kw, max(0.0, h.heat_kw_per_k * (flow[i] - ts) + h.heat_offset_kw))
-            eur += heat * SLOT_H * self.eur_per_kwh_heat[i]
+            eur += heat * SLOT_H * price[i]
             q = k_sr * (ts - tr)
             ts += (heat - q) * SLOT_H / cs
             tr += (q + self.gains[i] - ua * (tr - self.t_out[i])) * SLOT_H / cr
@@ -98,6 +107,13 @@ class _Sim:
             if trace is not None:
                 trace.append((tr, ts))
         return eur, pen, tr, ts
+
+
+def mean_eur_per_kwh_heat(slots: list[Slot], house: House, curve: Curve, heat_c: float, limits: Limits) -> float:
+    """What heat left in the house is worth: what it would cost to make, on average over the
+    horizon, with the setpoint at its heat value."""
+    costs = [limits.eur_per_kwh(s.price) / house.cop_at(curve.flow_c(heat_c, s.t_out)) for s in slots]
+    return sum(costs) / max(len(costs), 1)
 
 
 def simulate(
@@ -160,7 +176,7 @@ def plan(
         return (limits.start_penalty_eur if a and not h else 0.0) + (limits.write_penalty_eur if a != held else 0.0)
 
     # Heat left in the house at the end, valued at the horizon's mean price.
-    mean = sum(sim.eur_per_kwh_heat) / max(len(slots), 1)
+    mean = mean_eur_per_kwh_heat(slots, house, curve, setpoints[1], limits)
     lo = limits.band_c[0]
     terminal = [[(house.room_kwh_per_k * (lo - r) + house.slab_kwh_per_k * (lo - s)) * mean for s in slabs] for r in rooms]
 

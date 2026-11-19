@@ -8,7 +8,8 @@ file. Shadow mode writes nothing to the pump.
 Environment: MQTT_BROKER (host), MQTT_PORT (1883; 8883 means TLS), MQTT_USERNAME, MQTT_PASSWORD,
 MQTT_CLIENT_ID, PROMETHEUS_URL, HEATPUMP_LATLON ("lat,lon"), HTTP_HOST (127.0.0.1), HTTP_PORT
 (9841; all endpoints), SUMMARY_PORT (none if unset; only /summary.json, on all addresses, for a
-reader on the network), ROUND_LOG (a file to append the rounds to; none if unset).
+reader on the network), PRICE_EXTRA_C_KWH (0; per-kWh costs on top of spot: margin, transfer,
+tax, c/kWh incl. VAT), ROUND_LOG (a file to append the rounds to; none if unset).
 """
 
 import json
@@ -24,7 +25,7 @@ import paho.mqtt.client as mqtt
 from heatpump_control import ha
 from heatpump_control.metrics import Snapshot, serve_http
 from heatpump_control.rooms import BEDROOMS, Rooms
-from heatpump_control.rounds import RoundError, fetch_inputs, ha_state, plan_round, round_log, summary
+from heatpump_control.rounds import RoundError, env_limits, fetch_inputs, ha_state, plan_round, round_log, summary
 from heatpump_control.settings import Settings
 
 log = logging.getLogger("heatpump_control")
@@ -100,7 +101,7 @@ class Service:
             with self.lock:
                 t_room, settings = self.rooms.median(now), self.settings
             inputs = fetch_inputs(now, self.env.get("PROMETHEUS_URL", "http://localhost:9090"), self.env["HEATPUMP_LATLON"])
-            res = plan_round(now, t_room, inputs, settings)
+            res = plan_round(now, t_room, inputs, settings, env_limits(self.env))
         except (RoundError, OSError, ValueError, KeyError) as e:
             self.snapshot.count(False, str(e))
             log.error("round failed: %s", e)

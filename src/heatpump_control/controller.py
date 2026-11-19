@@ -2,15 +2,15 @@
 
 The baseline is the pump's own time program as the model sees it: the active setpoint keeps its
 program value (Normal asks for heat, Reduced is idle, which the curve may still turn into heat). The savings estimate is the
-baseline's cost minus the plan's, with the difference in heat left in the house at the end
-valued at the horizon's mean price.
+baseline's cost minus the plan's plus `heat_left_eur`: the difference in heat left in the house
+at the end, valued at the horizon's mean price (a plan that ends warmer has bought heat ahead).
 """
 
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 
 from heatpump_control.model import Curve, House
-from heatpump_control.planner import SLOT_H, Limits, Plan, Slot, plan, simulate
+from heatpump_control.planner import SLOT_H, Limits, Plan, Slot, mean_eur_per_kwh_heat, plan, simulate
 from heatpump_control.program import Program, Setpoints, setpoint_writes
 from heatpump_control.sources import Series, interpolate, step_value
 
@@ -27,7 +27,8 @@ class Round:
     setpoints: Setpoints
     write_penalty_eur: float
     over_write_cap: bool
-    savings_eur: float
+    savings_eur: float  # baseline.cost_eur - plan.cost_eur + heat_left_eur
+    heat_left_eur: float
 
 
 def slot_start(now: datetime) -> datetime:
@@ -87,8 +88,8 @@ def decide(
             break
         lim = replace(lim, write_penalty_eur=lim.write_penalty_eur * 2)
     base = baseline(slots, t_room, t_slab, house, curve, limits, program)
-    mean_eur_kwh = sum(s.price for s in slots) / max(len(slots), 1) / 1000 * (1 + limits.vat) / house.cop
+    mean_eur_kwh = mean_eur_per_kwh_heat(slots, house, curve, program.heat_c, limits)
     left = (
         house.room_kwh_per_k * (p.t_room[-1] - base.t_room[-1]) + house.slab_kwh_per_k * (p.t_slab[-1] - base.t_slab[-1])
     ) * mean_eur_kwh
-    return Round(slots, p, base, sp, lim.write_penalty_eur, over, base.cost_eur - p.cost_eur + left)
+    return Round(slots, p, base, sp, lim.write_penalty_eur, over, base.cost_eur - p.cost_eur + left, left)

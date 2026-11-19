@@ -60,7 +60,7 @@ class Snapshot:
                 "slab_estimate_celsius": ("Floor slab estimate at the last round.", res.t_slab),
                 "heating_planned": ("1 if the plan asks for heat now.", int(r.plan.heating[0])),
                 "program_heating": ("1 if the pump's own time program asks for heat now.", int(r.baseline.heating[0])),
-                "plan_cost_euros": ("Plan's electricity over the horizon, spot incl. VAT.", r.plan.cost_eur),
+                "plan_cost_euros": ("Plan's electricity over the horizon, full per-kWh price.", r.plan.cost_eur),
                 "program_cost_euros": ("The time program's electricity over the horizon.", r.baseline.cost_eur),
                 "savings_estimate_euros": ("Program minus plan, heat left in the house valued.", r.savings_eur),
                 "planned_writes": ("Setpoint writes in the plan over the horizon.", len(r.setpoints.writes)),
