@@ -20,12 +20,26 @@ planner 18/23 161.9 / 2.77, cop-aware 156.3 / 2.85; 16/23 159.5 / 2.25, cop-awar
 18/26 172.4 / 2.70, cop-aware 160.7 / 2.69; 16/26 176.2 / 2.34, cop-aware 171.1 / 2.34. A hotter
 heat value buys cheaper kWh but loses more on COP; knowing the COP is worth more than any pair.
 
-Args: dir src [pairs]; dir holds prices/fi.json (Energy-Charts FI) and wx/wind.json (Open-Meteo
+Args: dir src [pairs | gap]; dir holds prices/fi.json (Energy-Charts FI) and wx/wind.json (Open-Meteo
 hourly temperature_2m and shortwave_radiation, Europe/Helsinki); src the app's src/; pairs like
 18/23,16/26 (idle/heat). Runs the pairs and periods in parallel, one process each.
+
+`gap` instead asks why the planner saves so little in winter (COP-aware, 18/23): a wider comfort
+band, no target penalty, prices known 36 h ahead without start and write penalties (the
+planner's own ceiling), and a comfort-blind ceiling as in shift_sim.py: each day's heat of the
+program at full power in the day's cheapest slots, at the program's COP that day.
+
+Result 2026-11-19 (winter, €, saving against the program's 163.8): band 20-22 156.3 (7.5); no
+target 155.6 (8.2); its own ceiling 154.9 (8.9); band 19.5-22.5 152.4 (11.4, 212 h below 20);
+19-23 152.2 (11.7, 268 h); ceiling 19-23 148.2 (15.6); comfort-blind day shift 151.1 (12.7). The
+planner gets within 1.4 € of what its band allows; the band is the lever, about 4 € a winter
+for the first 0.5 K below 20, little after. Idle at 18 still heats 1.3-1.9 kW at -6 °C against
+the 3.2 kW the house loses, so only about half the heat can move at all.
 """
 
 import bisect
+import collections
+import dataclasses
 import datetime as dt
 import json
 import sys
@@ -33,11 +47,13 @@ from multiprocessing import Pool
 from zoneinfo import ZoneInfo
 
 D, SRC = sys.argv[1], sys.argv[2]
-PAIRS = [tuple(float(x) for x in p.split("/")) for p in (sys.argv[3] if len(sys.argv) > 3 else "18/23,16/23,18/26,16/26").split(",")]
+MODE = sys.argv[3] if len(sys.argv) > 3 else "18/23,16/23,18/26,16/26"
+PAIRS = [] if MODE == "gap" else [tuple(float(x) for x in p.split("/")) for p in MODE.split(",")]
 sys.path.insert(0, SRC)
 from heatpump_control import planner  # noqa: E402
 from heatpump_control.controller import build_slots, decide  # noqa: E402
 from heatpump_control.model import Curve, House  # noqa: E402
+from heatpump_control.planner import Limits  # noqa: E402
 from heatpump_control.program import Program  # noqa: E402
 
 TZ = ZoneInfo("Europe/Helsinki")
@@ -65,11 +81,14 @@ RAD = list(zip(WT, w["shortwave_radiation"]))
 PT, TT = [t for t, _ in PRICES], [t for t, _ in TEMPS]
 
 
-def known_prices(now: dt.datetime):
-    """Prices as the service would have them: through today, and tomorrow from 14:00 local."""
+def known_prices(now: dt.datetime, perfect: bool = False):
+    """Prices as the service would have them: through today, and tomorrow from 14:00 local
+    (`perfect`: always the next 37 h)."""
     local = now.astimezone(TZ)
     days = 2 if local.hour >= 14 else 1
     end = dt.datetime.combine(local.date() + dt.timedelta(days=days), dt.time(), TZ).astimezone(UTC)
+    if perfect:
+        end = now + dt.timedelta(hours=37)
     i, j = bisect.bisect_left(PT, now - dt.timedelta(hours=1)), bisect.bisect_left(PT, end)
     return PRICES[i:j]
 
@@ -88,6 +107,7 @@ class World:
         self.rooms: list[float] = []
         self.starts = 0
         self.prev = None
+        self.days = collections.defaultdict(list)  # local date -> [(price, heat kWh, el kWh)]
 
     def step(self, slot, setpoint: float, asks_heat: bool) -> None:
         flow = CURVE.flow_c(setpoint, slot.t_out)
@@ -96,6 +116,7 @@ class World:
         self.kwh += kwh
         self.heat_kwh += heat * 0.25
         self.eur += kwh * slot.price / 1000 * (1 + VAT)
+        self.days[slot.start.astimezone(TZ).date()].append((slot.price, heat * 0.25, kwh))
         self.tr, self.ts = HOUSE.step(self.tr, self.ts, slot.t_out, slot.radiation, heat, 0.25)
         self.rooms.append(self.tr)
         if asks_heat and self.prev is False:
@@ -103,9 +124,9 @@ class World:
         self.prev = asks_heat
 
 
-def slots_at(now):
+def slots_at(now, perfect: bool = False):
     temps, rad = weather(now)
-    return build_slots(now, known_prices(now), temps, rad)
+    return build_slots(now, known_prices(now, perfect), temps, rad)
 
 
 def baseline(start, end, t_room=21.0, t_slab=25.0) -> World:
@@ -145,21 +166,48 @@ class CopAwareSim(planner._Sim):
         return eur, pen, tr, ts
 
 
+def day_shift_ceiling(world: World) -> float:
+    """Each day's heat at full power in that day's cheapest slots, at the day's COP; no comfort."""
+    eur, cap = 0.0, HOUSE.heat_max_kw * 0.25
+    for slots in world.days.values():
+        heat, el = sum(h for _, h, _ in slots), sum(k for _, _, k in slots)
+        if heat <= 0:
+            continue
+        for price, _, _ in sorted(slots):
+            take = min(cap, heat)
+            eur += take * el / sum(h for _, h, _ in slots) * price / 1000 * (1 + VAT)
+            heat -= take
+            if heat <= 0:
+                break
+    return round(eur, 2)
+
+
 def run(job):
-    period, (idle, heat), aware = job
+    if isinstance(job, tuple):
+        period, (idle, heat), aware = job
+        job = {"period": period, "idle": idle, "heat": heat, "aware": aware}
+    period, idle, heat, aware = job["period"], job["idle"], job["heat"], job["aware"]
+    limits = Limits()
+    if "band" in job:
+        limits = dataclasses.replace(limits, band_c=job["band"])
+    if "target_pen" in job:
+        limits = dataclasses.replace(limits, target_penalty_eur_per_k_h=job["target_pen"])
+    if job.get("no_pen"):
+        limits = dataclasses.replace(limits, start_penalty_eur=0.0, write_penalty_eur=0.0)
+    perfect = job.get("perfect", False)
     planner._Sim = CopAwareSim if aware else PLAIN_SIM  # every job: pool workers are reused
     start, end = PERIODS[period]
     warm = baseline(start - WARMUP, start)
     if (idle, heat) == (None, None):
         world = baseline(start, end, warm.tr, warm.ts)
-        return period, "program", summary(world, start, end, 0, 0)
+        return period, "program", summary(world, start, end, 0, 0) | {"day_shift_ceiling_eur": day_shift_ceiling(world)}
     prog = Program(heat_c=heat, idle_c=idle)
     world, now = World(warm.tr, warm.ts), start.astimezone(UTC)
     registers = prog.defaults()
     writes, per_day = 0, {}
     while now < end:
-        slots = slots_at(now)
-        r = decide(slots, world.tr, world.ts, registers, CURVE, HOUSE, program=prog)
+        slots = slots_at(now, perfect)
+        r = decide(slots, world.tr, world.ts, registers, CURVE, HOUSE, limits=limits, program=prog, write_cap=10**6 if job.get("no_pen") else 12)
         first = [s.start for s in slots[:4]]
         for wr in r.setpoints.writes:
             if wr.at in first:
@@ -170,7 +218,8 @@ def run(job):
         for s, h in zip(slots[:4], r.plan.heating[:4]):
             world.step(s, heat if h else idle, h)
         now += dt.timedelta(hours=1)
-    return period, f"{idle:g}/{heat:g}" + (" cop-aware" if aware else ""), summary(world, start, end, writes, max(per_day.values(), default=0))
+    name = job.get("name") or f"{idle:g}/{heat:g}" + (" cop-aware" if aware else "")
+    return period, name, summary(world, start, end, writes, max(per_day.values(), default=0))
 
 
 def summary(world: World, start, end, writes, max_writes_day) -> dict:
@@ -186,10 +235,25 @@ def summary(world: World, start, end, writes, max_writes_day) -> dict:
     }
 
 
+GAP = [
+    {"name": "band 20-22 (reference)"},
+    {"name": "band 19.5-22.5", "band": (19.5, 22.5)},
+    {"name": "band 19-23", "band": (19.0, 23.0)},
+    {"name": "band 20-22, no target", "target_pen": 0.0},
+    {"name": "band 19.5-22.5, no target", "band": (19.5, 22.5), "target_pen": 0.0},
+    {"name": "ceiling 20-22: 36 h prices, no penalties", "perfect": True, "no_pen": True},
+    {"name": "ceiling 19-23: 36 h prices, no penalties, no target", "band": (19.0, 23.0), "target_pen": 0.0, "perfect": True, "no_pen": True},
+]
+
 if __name__ == "__main__":
-    jobs = [(period, (None, None), False) for period in PERIODS]
-    jobs += [(period, pair, aware) for period in PERIODS for pair in PAIRS for aware in (False, True)]
-    jobs.sort(key=lambda j: j[0] != "winter")  # the long ones first
+    if MODE == "gap":
+        jobs = [("winter", (None, None), False)]
+        jobs += [{"period": "winter", "idle": 18.0, "heat": 23.0, "aware": True} | g for g in GAP]
+        jobs.sort(key=lambda j: not isinstance(j, dict) or "band" not in j)  # the slow wide bands first
+    else:
+        jobs = [(period, (None, None), False) for period in PERIODS]
+        jobs += [(period, pair, aware) for period in PERIODS for pair in PAIRS for aware in (False, True)]
+        jobs.sort(key=lambda j: j[0] != "winter")  # the long ones first
     with Pool(4) as pool:
         results = pool.map(run, jobs, chunksize=1)
     for period, name, s in results:
